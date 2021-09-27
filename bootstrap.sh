@@ -1,17 +1,6 @@
 #!/usr/bin/env bash
 
-TLS_ENABLED=${TLS_ENABLED:-false}
-if $TLS_ENABLED; then
-    HTTP="https"
-    CN=${CN:-$HOSTNAME}
-    # generate pem and crt files
-    mkdir -p /etc/apache2/ssl
-    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-        -keyout /etc/apache2/ssl/apache.key -out /etc/apache2/ssl/apache.crt \
-        -subj "/C=$CONUTRY/ST=$STATE/L=$LOCALITY/O=$ORG/OU=$ORG_UNIT/CN=$CN"
-else
-    HTTP="http"
-fi
+HTTP="http"
 
 if [ -z $KEYSTONE_DB_HOST ]; then
     KEYSTONE_DB_HOST=localhost
@@ -66,6 +55,19 @@ sed -i "s/KEYSTONE_DB_HOST/$KEYSTONE_DB_HOST/g" /etc/keystone/keystone.conf
 # Populate keystone database
 su -s /bin/sh -c 'keystone-manage db_sync' keystone
 
+# Initialize fernet
+keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone
+keystone-manage credential_setup --keystone-user keystone --keystone-group keystone
+
+# Configure Apache2
+echo "ServerName $HOSTNAME" >> /etc/apache2/apache2.conf
+
+# Enable keystone service  
+ln -s /etc/apache2/sites-available/keystone.conf /etc/apache2/sites-enabled/keystone.conf
+
+# Start Apache2
+service apache2 restart
+
 # Bootstrap keystone
 keystone-manage bootstrap --bootstrap-username admin \
 		--bootstrap-password $KEYSTONE_ADMIN_PASSWORD \
@@ -87,21 +89,9 @@ export OS_AUTH_URL=$HTTP://${HOSTNAME}:35357/v3
 export OS_IDENTITY_API_VERSION=3
 export OS_IMAGE_API_VERSION=2
 EOF
+source /root/openrc
 
-# Configure Apache2
-echo "ServerName $HOSTNAME" >> /etc/apache2/apache2.conf
+# Add users
+for i in $(seq 1 5); do openstack user create --domain default --project admin --password redhat user$i; done
 
-# if TLS is enabled
-if $TLS_ENABLED; then
-echo "export OS_CACERT=/etc/apache2/ssl/apache.crt" >> /root/openrc
-a2enmod ssl
-sed -i '/<VirtualHost/a \
-    SSLEngine on \
-    SSLCertificateFile /etc/apache2/ssl/apache.crt \
-    SSLCertificateKeyFile /etc/apache2/ssl/apache.key \
-    ' /etc/apache2/sites-available/keystone.conf
-fi
-
-# ensite keystone and start apache2
-a2ensite keystone
-apache2ctl -D FOREGROUND
+tail -f /dev/null
